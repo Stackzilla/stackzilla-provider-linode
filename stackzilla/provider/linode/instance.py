@@ -1,5 +1,7 @@
 """Linode Instance resource definition for Stackzilla."""
+import os
 import re
+from tempfile import mkstemp
 from typing import Any, List
 
 from linode_api4 import LinodeClient
@@ -12,7 +14,7 @@ from stackzilla.resource.base import ResourceVersion, StackzillaResource
 from stackzilla.resource.compute import StackzillaCompute, SSHAddress, SSHCredentials
 from stackzilla.resource.compute.exceptions import SSHConnectError
 from stackzilla.resource.exceptions import ResourceVerifyError, ResourceCreateFailure
-
+from stackzilla.resource.ssh_key import StackzillaSSHKey
 
 from .utils import LINODE_REGIONS, LINODE_INSTANCE_TYPES, LINODE_IMAGE_TYPES
 
@@ -21,6 +23,7 @@ class LinodeInstance(StackzillaCompute):
     # Dynamic attributes
     instance_id = StackzillaAttribute(dynamic=True)
     root_password = StackzillaAttribute(dynamic=True, secret=True)
+    ssh_key = StackzillaAttribute(types=[StackzillaSSHKey])
     ipv4 = StackzillaAttribute(dynamic=True)
     ipv6 = StackzillaAttribute(dynamic=True)
 
@@ -61,17 +64,41 @@ class LinodeInstance(StackzillaCompute):
         if self.group:
             create_args['group'] = self.group
 
+        tmp_file_name = None
+        if self.ssh_key:
+            ssh_obj = self.ssh_key()
+            ssh_obj.load_from_db()
+
+            # We are dropping the public key on disk because that's what the API wants
+            _, tmp_file_name = mkstemp()
+
+            with open(tmp_file_name, 'w', encoding='utf-8') as output_file:
+                output_file.write(ssh_obj.public_key.decode('utf-8'))
+
+            create_args['authorized_keys'] = [tmp_file_name]
+
         # Create the instance
         try:
             instance, password = self.api.linode.instance_create(**create_args)
         except ApiError as err:
+            # If there was a temporary file for the public key, clean it up here
+            if tmp_file_name:
+                os.unlink(tmp_file_name)
+
             self._logger.critical(f'Instance creation failed: {err}')
             raise ResourceCreateFailure(reason=str(err), resource_name=self.path()) from err
+
+        # Delete the temporary file for the public key
+        if tmp_file_name:
+            os.unlink(tmp_file_name)
 
         self.root_password = password
         self.instance_id = instance.id
         self.ipv4 = instance.ipv4
         self.ipv6 = instance.ipv6
+
+        # Persist this resource to the database
+        super().create()
 
         # Wait up to two minutes for the server to come online
         try:
@@ -83,8 +110,7 @@ class LinodeInstance(StackzillaCompute):
 
         self._logger.debug(message=f'Instance creation complete {self.instance_id}: {self.ipv4 =} | {self.ipv6 =}')
 
-        # Persist this resource to the database
-        return super().create()
+
 
     def delete(self) -> None:
         """Delete a previously created volume."""
@@ -100,13 +126,25 @@ class LinodeInstance(StackzillaCompute):
 
     def depends_on(self) -> List['StackzillaResource']:
         """Required to be overridden."""
-        return []
+        dependencies = []
+        if self.ssh_key:
+            dependencies.append(self.ssh_key)
+
+        return dependencies
 
     def ssh_address(self) -> SSHAddress:
         return SSHAddress(host=self.ipv4[0], port=22)
 
     def ssh_credentials(self) -> SSHCredentials:
-        return SSHCredentials(username='root', password=self.root_password, key=None)
+
+        private_key = None
+        if self.ssh_key:
+            # Instantiate the key and load it from the database
+            key = self.ssh_key()
+            key.load_from_db()
+            private_key = key.private_key
+
+        return SSHCredentials(username='root', password=self.root_password, key=private_key)
 
     def verify(self) -> None:
 

@@ -1,7 +1,14 @@
+from stackzilla.resource.ssh_key import StackzillaSSHKey
 from stackzilla.provider.linode.instance import LinodeInstance
 
 from .token import token
 LinodeInstance.token = token
+
+class MyKey(StackzillaSSHKey):
+    def __init__(self) -> None:
+        super().__init__()
+        self.key_size = 2048
+
 
 class MyServer(LinodeInstance):
     def __init__(self):
@@ -12,3 +19,4 @@ class MyServer(LinodeInstance):
         self.label = 'Stackzilla_Test-Linode.1'
         self.tags = ['testing']
         self.private_ip = False
+        self.ssh_key = MyKey

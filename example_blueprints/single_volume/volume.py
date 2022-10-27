@@ -1,5 +1,5 @@
 from stackzilla.provider.linode.volume import LinodeVolume
-from .instance import MyServer
+#from .instance import MyServer
 from .token import token
 LinodeVolume.token = token
 """
