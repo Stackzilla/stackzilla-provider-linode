@@ -36,3 +36,7 @@ jobs:
     - name: Running pydocstyle
       run: |
         pydocstyle ./stackzilla/provider/linode/
+
+    - name: Running pylint
+      run: |
+        pylint ./stackzilla/provider/linode
