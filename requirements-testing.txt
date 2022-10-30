@@ -7,4 +7,3 @@ pydocstyle==6.1.1
 pyflakes==2.5.0
 pylint
 pytest
-pytest-cov
