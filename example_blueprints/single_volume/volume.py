@@ -1,8 +1,9 @@
+"""Example volume blueprint resource for a Linode volume."""
+import os
 from stackzilla.provider.linode.volume import LinodeVolume
-#from .instance import MyServer
-from .token import token
-LinodeVolume.token = token
-"""
+from .instance import MyServer
+LinodeVolume.token = os.getenv('STACKZILLA_LINODE_TOKEN')
+
 class MyVolume(LinodeVolume):
     def __init__(self):
         super().__init__()
@@ -12,4 +13,3 @@ class MyVolume(LinodeVolume):
         self.tags = ['foo', 'bar', 'zim']
         self.label = 'Stackzilla_Testing_2'
         self.instance = MyServer
-"""

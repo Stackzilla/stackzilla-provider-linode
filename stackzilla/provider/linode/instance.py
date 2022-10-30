@@ -7,19 +7,22 @@ from typing import Any, List
 from linode_api4 import LinodeClient
 from linode_api4.errors import ApiError
 from linode_api4.objects.linode import Instance
-
 from stackzilla.attribute import StackzillaAttribute
 from stackzilla.logger.provider import ProviderLogger
 from stackzilla.resource.base import ResourceVersion, StackzillaResource
-from stackzilla.resource.compute import StackzillaCompute, SSHAddress, SSHCredentials
+from stackzilla.resource.compute import (SSHAddress, SSHCredentials,
+                                         StackzillaCompute)
 from stackzilla.resource.compute.exceptions import SSHConnectError
-from stackzilla.resource.exceptions import ResourceVerifyError, ResourceCreateFailure
+from stackzilla.resource.exceptions import (ResourceCreateFailure,
+                                            ResourceVerifyError)
 from stackzilla.resource.ssh_key import StackzillaSSHKey
 
-from .utils import LINODE_REGIONS, LINODE_INSTANCE_TYPES, LINODE_IMAGE_TYPES
+from .utils import LINODE_IMAGE_TYPES, LINODE_INSTANCE_TYPES, LINODE_REGIONS
+
 
 class LinodeInstance(StackzillaCompute):
     """Stackzilla provider for Linode Instances."""
+
     # Dynamic attributes
     instance_id = StackzillaAttribute(dynamic=True)
     root_password = StackzillaAttribute(dynamic=True, secret=True)
@@ -39,13 +42,13 @@ class LinodeInstance(StackzillaCompute):
     token = None
 
     def __init__(self):
+        """Setup logger and Linode API."""
         super().__init__()
         self._logger = ProviderLogger(provider_name='linode.instance', resource_name=self.path())
         self.api = LinodeClient(self.token)
 
     def create(self) -> None:
         """Called when the resource is created."""
-
         self._logger.debug(message=f'Starting instance creation {self.label}')
 
         create_args = {
@@ -133,10 +136,19 @@ class LinodeInstance(StackzillaCompute):
         return dependencies
 
     def ssh_address(self) -> SSHAddress:
+        """Fetch the IP address & port for SSHing into the Linode.
+
+        Returns:
+            SSHAddress: The IP/port information
+        """
         return SSHAddress(host=self.ipv4[0], port=22)
 
     def ssh_credentials(self) -> SSHCredentials:
+        """Fetch the credentials needed to SSH into the Linode.
 
+        Returns:
+            SSHCredentials: The username/password/key for SSH authentication.
+        """
         private_key = None
         if self.ssh_key:
             # Instantiate the key and load it from the database
@@ -147,7 +159,7 @@ class LinodeInstance(StackzillaCompute):
         return SSHCredentials(username='root', password=self.root_password, key=private_key)
 
     def verify(self) -> None:
-
+        """Verify instance parameters."""
         # Make sure the user declared a token to use when authenticating with Linode
         if self.token is None:
             err = ResourceVerifyError(resource_name=self.path())
@@ -167,7 +179,12 @@ class LinodeInstance(StackzillaCompute):
     # Modification Methods
     ##############################################################
     def type_modified(self, previous_value: Any, new_value: Any) -> None:
+        """Handle when the instance type is modified.
 
+        Args:
+            previous_value (Any): The previous instance type
+            new_value (Any): The new instance type.
+        """
         self._logger.debug(message=f'Resizing instance from {previous_value} to {new_value}')
         instance = Instance(client=self.api, id=self.instance_id)
 
@@ -176,12 +193,24 @@ class LinodeInstance(StackzillaCompute):
         instance.resize(new_value)
 
     def label_modified(self, previous_value: Any, new_value: Any) -> None:
+        """Handler for when the label is modified.
+
+        Args:
+            previous_value (Any): Previous value for the label.
+            new_value (Any): New label value.
+        """
         self._logger.debug(message=f'Updating label from {previous_value} to {new_value}')
         instance = Instance(client=self.api, id=self.instance_id)
         instance.label = new_value
         instance.save()
 
     def group_modified(self, previous_value: Any, new_value: Any) -> None:
+        """Handler for when the group is modified.
+
+        Args:
+            previous_value (Any): The previous group name
+            new_value (Any): The new group name
+        """
         self._logger.debug(message=f'Updating group from {previous_value} to {new_value}')
 
         instance = Instance(client=self.api, id=self.instance_id)
@@ -189,6 +218,12 @@ class LinodeInstance(StackzillaCompute):
         instance.save()
 
     def tags_modified(self, previous_value: Any, new_value: Any) -> None:
+        """Handler for when the tags attribute is modified.
+
+        Args:
+            previous_value (Any): The previous tags value.
+            new_value (Any): New tags value.
+        """
         self._logger.debug(message=f'Updating tags from {previous_value} to {new_value}')
 
         instance = Instance(client=self.api, id=self.instance_id)
