@@ -1,8 +1,9 @@
+"""Example Stackzilla resource for a Linode instance."""
+import os
 from stackzilla.resource.ssh_key import StackzillaSSHKey
 from stackzilla.provider.linode.instance import LinodeInstance
 
-from .token import token
-LinodeInstance.token = token
+LinodeInstance.token = os.getenv('STACKZILLA_LINODE_TOKEN')
 
 class MyKey(StackzillaSSHKey):
     def __init__(self) -> None:

@@ -4,15 +4,16 @@ from typing import Any, List, Optional
 from linode_api4 import LinodeClient
 from linode_api4.errors import ApiError
 from linode_api4.objects.volume import Volume
-
 from stackzilla.attribute import StackzillaAttribute
 from stackzilla.logger.provider import ProviderLogger
 from stackzilla.resource.base import ResourceVersion, StackzillaResource
-from stackzilla.resource.exceptions import ResourceVerifyError, ResourceCreateFailure
+from stackzilla.resource.exceptions import (ResourceCreateFailure,
+                                            ResourceVerifyError)
 from stackzilla.utils.numbers import StackzillaRange
 
-from .utils import LINODE_REGIONS
 from .instance import LinodeInstance
+from .utils import LINODE_REGIONS
+
 
 class LinodeVolume(StackzillaResource):
     """Resource definition for a Linode volume."""
@@ -30,6 +31,7 @@ class LinodeVolume(StackzillaResource):
     token = None
 
     def __init__(self):
+        """Setup the logger and Linode API."""
         super().__init__()
         self._logger = ProviderLogger(provider_name='linode.volume', resource_name=self.path())
 
@@ -43,7 +45,6 @@ class LinodeVolume(StackzillaResource):
 
     def create(self) -> None:
         """Called when the resource is created."""
-
         create_data = {
             'region': self.region,
             'size': self.size,
@@ -96,7 +97,7 @@ class LinodeVolume(StackzillaResource):
         return result
 
     def label_modified(self, previous_value: Any, new_value: Any) -> None:
-        """Called when the label value needs modification
+        """Called when the label value needs modification.
 
         Args:
             previous_value (Any): Previous label
