@@ -32,6 +32,7 @@ setup(
     url='https://github.com/Stackzilla/stackzilla-provider-linode',
     description='Linode provider for Stackzilla.',
     long_description=open('README.md', encoding='utf-8').read(),
+    long_description_content_type='text/markdown',
     license='GNU Affero General Public License v3',
     classifiers=[
         'Development Status :: 3 - Alpha',
