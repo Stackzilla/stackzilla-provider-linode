@@ -38,6 +38,7 @@ class LinodeInstance(StackzillaCompute):
     group = StackzillaAttribute()
     tags = StackzillaAttribute()
     private_ip = StackzillaAttribute(default=False, choices=[True, False])
+    volumes = StackzillaAttribute()
 
     token = None
 
@@ -69,8 +70,7 @@ class LinodeInstance(StackzillaCompute):
 
         tmp_file_name = None
         if self.ssh_key:
-            ssh_obj = self.ssh_key()
-            ssh_obj.load_from_db()
+            ssh_obj = self.ssh_key.from_db()
 
             # We are dropping the public key on disk because that's what the API wants
             _, tmp_file_name = mkstemp()
@@ -105,8 +105,8 @@ class LinodeInstance(StackzillaCompute):
 
         # Wait up to two minutes for the server to come online
         try:
-            self._logger.debug(message=f'Waiting for SSH to become available on {self.ipv4}')
-            self.wait_for_ssh(retry_count=24, retry_delay=5)
+            self._logger.debug(message=f'Waiting up to 5 minutes for SSH to become available on {self.ipv4}')
+            self.wait_for_ssh(retry_count=60, retry_delay=5)
         except SSHConnectError as exc:
             self._logger.critical(f'Instance creation failed: {str(exc)}')
             raise ResourceCreateFailure(reason='Unable to establish SSH connection.', resource_name=self.path()) from exc
@@ -116,7 +116,7 @@ class LinodeInstance(StackzillaCompute):
 
 
     def delete(self) -> None:
-        """Delete a previously created volume."""
+        """Delete a previously created instance."""
         self._logger.debug(message=f'Deleting {self.label}')
 
         instance = Instance(client=self.api, id=self.instance_id)
@@ -152,8 +152,7 @@ class LinodeInstance(StackzillaCompute):
         private_key = None
         if self.ssh_key:
             # Instantiate the key and load it from the database
-            key = self.ssh_key()
-            key.load_from_db()
+            key = self.ssh_key.from_db()
             private_key = key.private_key
 
         return SSHCredentials(username='root', password=self.root_password, key=private_key)
@@ -234,6 +233,12 @@ class LinodeInstance(StackzillaCompute):
 
         instance.tags = new_value
         instance.save()
+
+    ##############################################################
+    # Event Handlers
+    ##############################################################
+    def _volume_size_changed(self, sender, previous_value, new_value):
+        pass
 
     @classmethod
     def version(cls) -> ResourceVersion:

@@ -1,15 +1,18 @@
 """Linode Volume resource definition for Stackzilla."""
+from time import sleep
 from typing import Any, List, Optional
 
 from linode_api4 import LinodeClient
 from linode_api4.errors import ApiError
 from linode_api4.objects.volume import Volume
 from stackzilla.attribute import StackzillaAttribute
+from stackzilla.events import StackzillaEvent
 from stackzilla.logger.provider import ProviderLogger
 from stackzilla.resource.base import ResourceVersion, StackzillaResource
 from stackzilla.resource.exceptions import (ResourceCreateFailure,
                                             ResourceVerifyError)
 from stackzilla.utils.numbers import StackzillaRange
+from stackzilla.utils.ssh import CmdResult
 
 from .instance import LinodeInstance
 from .utils import LINODE_REGIONS
@@ -26,9 +29,17 @@ class LinodeVolume(StackzillaResource):
     region = StackzillaAttribute(required=True, modify_rebuild=True, choices=LINODE_REGIONS)
     size = StackzillaAttribute(required=True, modify_rebuild=False, number_range=StackzillaRange(min=10, max=10240))
     filesystem_path = StackzillaAttribute(dynamic=True)
+    hardware_type = StackzillaAttribute(dynamic=True)
     tags = StackzillaAttribute(required=False, modify_rebuild=False)
     instance = StackzillaAttribute(required=False, types=[LinodeInstance])
+    mount_point = StackzillaAttribute(required=False, types=[str])
+    file_system_type = StackzillaAttribute(required=False, default=None, choices=['ext4', None])
+
+    # Class variables
     token = None
+
+    # Events
+    size_changed_event = StackzillaEvent()
 
     def __init__(self):
         """Setup the logger and Linode API."""
@@ -64,29 +75,139 @@ class LinodeVolume(StackzillaResource):
                 self._logger.critical(f'Volume creation failed: {err}')
                 raise ResourceCreateFailure(reason=str(err), resource_name=self.path()) from err
 
-        if self.instance:
-            linode: LinodeInstance = self.instance()
-            linode.load_from_db()
+        # Persist this resource to the database
+        super().create()
 
-            create_data['linode '] = linode.instance_id
+        # Wait for the volume to become active
+        time_left = 120
+        while time_left > 0:
+            volume.invalidate()
+            if volume.status == 'active':
+                break
+            sleep(1)
+            time_left -= 1
+
+        if time_left == 0:
+            raise ResourceCreateFailure(reason=f'Volume never reached active state: {volume.status}',
+                                        resource_name=self.path())
 
         # Save the new volume ID
         self.volume_id = volume.id
         self._logger.log(message=f'Volume creation complete: {volume.id}')
 
-        # Persist this resource to the database
-        return super().create()
+        # Save the filesystem path
+        self.filesystem_path = volume.filesystem_path
+
+        # Save the hardware type
+        self.hardware_type = volume.hardware_type
+
+        # Update the database with the new information
+        super().update()
+
+        if self.instance:
+            linode: LinodeInstance = self.instance.from_db()
+            ssh_client = linode.ssh_connect()
+
+            self._logger.log(f'Attaching volume ({volume.id}) to instance ({linode.instance_id})')
+            volume.attach(to_linode=linode.instance_id)
+
+            # Wait for the device attachment point to show up on the instance (attachment is done)
+            time_left = 120
+            while time_left > 0:
+                result: CmdResult = ssh_client.run_command(command=f'stat {self.filesystem_path}')
+                if result.exit_code == 0:
+                    # Wait one more second. If we return right away, the API will yell at us!
+                    sleep(1)
+                    break
+
+                sleep(1)
+                time_left -= 1
+
+            if time_left == 0:
+                raise ResourceCreateFailure(reason='Volume never attached to instance',
+                                            resource_name=self.path())
+
+            self._logger.log('Attachment complete')
+
+            # Mount the volume
+            if self.mount_point:
+
+
+                # Before mounting, format the file system (if one doesn't already exist)
+                if self.file_system_type:
+                    # Use 'blkid' to see if a file system already exists
+                    result: CmdResult = ssh_client.run_command(command=f'blkid {self.filesystem_path}', sudo=True)
+                    if result.exit_code == 0:
+                        self._logger.log(f'File system already exists at {self.filesystem_path}. Skipping volume format.')
+                    else:
+                        # Format the file system
+                        format_cmd = f'mkfs.{self.file_system_type} {self.filesystem_path}'
+                        self._logger.log(f'Formatting: {format_cmd}')
+                        result: CmdResult = ssh_client.run_command(command=format_cmd, sudo=True)
+                        if result.exit_code:
+                            raise ResourceCreateFailure(reason=f'Failed to format volume: {result.stderr}', resource_name=self.path())
+
+                # Create the directory to mount the volume to
+                mkdir_cmd = f'mkdir -p {self.mount_point}'
+                self._logger.log(f'Creating mount point: {mkdir_cmd}')
+                result: CmdResult = ssh_client.run_command(command=mkdir_cmd, sudo=True, use_pty=True)
+                if result.exit_code:
+                    raise ResourceCreateFailure(reason=f'Failed to create a mount point directory: {result.stdout}', resource_name=self.path())
+
+                # OK...NOW we will mount the volume!
+                result: CmdResult = ssh_client.run_command(command=f'mount {self.filesystem_path} {self.mount_point}', sudo=True)
+                if result.exit_code:
+                    raise ResourceCreateFailure(reason=f'Failed to mount the volume: {result.stdout}', resource_name=self.path())
+
+                # TODO: Add the volume and mount point to fstab
+
 
     def delete(self) -> None:
         """Delete a previously created volume."""
-        self._logger.debug(message=f'Deleting {self.label}')
+        self._logger.debug(message=f'Deleting {self.label} | {self.volume_id}')
 
-        # TODO: if the volume is attached, detach it!
         volume = Volume(client=self.api, id=self.volume_id)
-        volume.delete()
-        super().delete()
 
-        self._logger.debug(message='Deletion complete')
+        # Detach the volume
+        if self.instance:
+            linode: LinodeInstance = self.instance.from_db()
+            ssh_client = linode.ssh_connect()
+            self._logger.debug('Unmounting volume')
+            result: CmdResult = ssh_client.run_command(command=f'umount -f {self.mount_point}')
+            if result.exit_code != 0:
+                self._logger.warning(f'Unable to unmount volume: {result.stderr}')
+
+            # Fire off the initial detachment request (retries may occur in the wait loop below)
+            self._logger.debug('Detaching volume')
+            volume.detach()
+
+            # Wait for the detach operation to complete
+            time_left = 120
+            while time_left > 0:
+                volume.invalidate()
+                if not volume.linode_id:
+                    # Wait one more second - this will fail if we bail immediately
+                    sleep(1)
+                    break
+
+                # Wait a second before trying again
+                sleep(1)
+                time_left -= 1
+
+                # !!!!HACK!!!!
+                # The API does NOT let us know if the detachment operation failed.
+                # To work around this, every 5 seconds, we'll re-issue the detachment command
+                if time_left > 0 and time_left % 5 == 0:
+                    self._logger.debug('Resending detach request...')
+                    volume.detach()
+
+            self._logger.debug('Detach complete')
+
+        self._logger.debug('Deleting volume')
+        volume.delete()
+        self._logger.debug('Deletion complete')
+
+        super().delete()
 
     def depends_on(self) -> List['StackzillaResource']:
         """Required to be overridden."""
@@ -122,9 +243,7 @@ class LinodeVolume(StackzillaResource):
             volume.detach()
 
         if new_value:
-            loaded_obj = new_value()
-            loaded_obj.load_from_db()
-
+            loaded_obj = new_value.from_db()
             self._logger.log(f'Attaching volume to {loaded_obj.path()}')
             volume.attach(to_linode=loaded_obj.instance_id)
 
@@ -159,6 +278,20 @@ class LinodeVolume(StackzillaResource):
         self._logger.log(f'Updating volume size from {previous_value} to {new_value}')
         volume.resize(new_value)
 
+        # If the volume is attached to a Linode, there is some addition work that needs to be performed
+        # TODO: If the volume is attached to an Instance, reboot the instance and perform the following commands:
+        # resize2fs <disk file location>
+
+        # Let any event handlers know that something changed
+        self.size_changed_event.invoke(sender=self)
+
+    def verify(self):
+        """Custom verifications for the Volume resource."""
+        super().verify()
+
+        # User must specify mount_point if file_system_type is specifed
+        if self.file_system_type and self.mount_point is None:
+            raise ResourceVerifyError('mount_point must be specified if file_system_type is declared')
 
     @classmethod
     def version(cls) -> ResourceVersion:
